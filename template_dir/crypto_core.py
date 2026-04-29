@@ -1,23 +1,6 @@
 """
 crypto_core.py
-==============
-Cryptographic primitives for Secure P2P Messenger.
-
-Design decisions (all address graded requirements):
-  - Key derivation : PBKDF2-HMAC-SHA256 (100,000 iterations) turns shared
-    password into 256-bit AES key. Never uses the password directly.
-  - Cipher         : AES-256-CBC (key ≥ 56 bits ✓).
-  - Padding        : PKCS#7 via PyCryptodome's Padding module.
-  - IV             : Fresh 16-byte random IV per message → same plaintext
-                     always produces different ciphertext ✓.
-  - Key rotation   : KeyManager rotates the session key every N messages
-                     (default 10) by re-deriving with an incrementing epoch
-                     counter mixed into the salt.
-  - Extra credit   : double_encrypt() applies AES-256-CBC followed by
-                     AES-256-CFB with different sub-keys, then XORs the two
-                     ciphertexts together.
-  - Extra credit   : DH key exchange (2048-bit MODP group 14) for password-
-                     free authenticated session setup.
+Cryptographic primitives for the Secure P2P Messenger.
 """
 
 import os
@@ -30,28 +13,21 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-AES_KEY_SIZE   = 32   # 256 bits
-AES_BLOCK_SIZE = 16   # 128 bits
+# AES-256 needs a 32-byte key and operates on 16-byte blocks
+AES_KEY_SIZE   = 32
+AES_BLOCK_SIZE = 16
 PBKDF2_ITERS   = 100_000
 SALT_SIZE      = 16
 
 
-# ---------------------------------------------------------------------------
-# Key Derivation
-# ---------------------------------------------------------------------------
+# --- Key Derivation ---
 
 def derive_key(password: str, salt: bytes, epoch: int = 0) -> bytes:
-    """
-    Derive a 256-bit AES key from *password* using PBKDF2-HMAC-SHA256.
-    *epoch* is mixed into the salt so that key rotation produces a
-    completely different key without requiring a new password exchange.
-    """
+    # Mix the epoch into the salt so each rotation gives a completely different key
     epoch_bytes = struct.pack(">Q", epoch)
     effective_salt = hashlib.sha256(salt + epoch_bytes).digest()
+
+    # PBKDF2 with 100k iterations — slow by design to resist brute-force
     key = hashlib.pbkdf2_hmac(
         "sha256",
         password.encode("utf-8"),
@@ -62,16 +38,10 @@ def derive_key(password: str, salt: bytes, epoch: int = 0) -> bytes:
     return key
 
 
-# ---------------------------------------------------------------------------
-# Standard AES-256-CBC encrypt / decrypt
-# ---------------------------------------------------------------------------
+# --- Standard AES-256-CBC Encrypt / Decrypt ---
 
 def encrypt(key: bytes, plaintext: str) -> dict:
-    """
-    Encrypt *plaintext* with AES-256-CBC.
-    Returns a dict with base64-encoded 'iv' and 'ciphertext'.
-    A random IV is generated each call → same message ≠ same ciphertext.
-    """
+    # A fresh random IV every call means identical messages encrypt differently
     iv = get_random_bytes(AES_BLOCK_SIZE)
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded = pad(plaintext.encode("utf-8"), AES_BLOCK_SIZE, style="pkcs7")
@@ -83,9 +53,6 @@ def encrypt(key: bytes, plaintext: str) -> dict:
 
 
 def decrypt(key: bytes, payload: dict) -> str:
-    """
-    Decrypt a payload produced by :func:`encrypt`.
-    """
     iv         = base64.b64decode(payload["iv"])
     ciphertext = base64.b64decode(payload["ciphertext"])
     cipher     = AES.new(key, AES.MODE_CBC, iv)
@@ -94,47 +61,26 @@ def decrypt(key: bytes, payload: dict) -> str:
     return plaintext.decode("utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Extra Credit Part 1 – Double Encryption with XOR
-# ---------------------------------------------------------------------------
+# --- Extra Credit: Double Encryption with XOR ---
 
 def double_encrypt(key: bytes, plaintext: str) -> dict:
-    """
-    Extra-credit double-encryption scheme:
-      1. Derive two independent sub-keys from *key* (using different domain
-         separation labels) – one for AES-256-CBC, one for AES-256-CFB.
-      2. Encrypt plaintext with both ciphers independently.
-      3. XOR the two ciphertexts together.
-      4. Store both IVs (needed for decryption) alongside the XOR'd blob.
-
-    Security argument:
-      An attacker must break *both* AES-256-CBC and AES-256-CFB
-      simultaneously to recover any information. Even if one cipher were
-      completely broken, the XOR layer with a second independent encryption
-      means the attacker still has no advantage. This is analogous to
-      double encryption used in 3DES / EEE mode.
-
-    Efficiency:
-      Two AES passes → roughly 2× encryption time, but AES is fast in
-      hardware so the overhead is negligible for instant messaging payloads.
-    """
-    # Sub-key derivation via HKDF-like domain separation
+    # Split the master key into two independent sub-keys using domain labels
     key_cbc = hashlib.sha256(b"CBC" + key).digest()
     key_cfb = hashlib.sha256(b"CFB" + key).digest()
 
     iv_cbc = get_random_bytes(AES_BLOCK_SIZE)
     iv_cfb = get_random_bytes(AES_BLOCK_SIZE)
 
+    # Pad once and reuse — both ciphers need the same length input
     padded = pad(plaintext.encode("utf-8"), AES_BLOCK_SIZE, style="pkcs7")
 
     cipher_cbc = AES.new(key_cbc, AES.MODE_CBC, iv_cbc)
     ct_cbc     = cipher_cbc.encrypt(padded)
 
-    # CFB operates on byte stream; pad to same length as CBC output
     cipher_cfb = AES.new(key_cfb, AES.MODE_CFB, iv_cfb, segment_size=128)
     ct_cfb     = cipher_cfb.encrypt(padded)
 
-    # XOR the two ciphertexts
+    # XOR the two ciphertexts — an attacker needs to break both ciphers to recover plaintext
     xored = bytes(a ^ b for a, b in zip(ct_cbc, ct_cfb))
 
     return {
@@ -142,38 +88,33 @@ def double_encrypt(key: bytes, plaintext: str) -> dict:
         "iv_cbc":     base64.b64encode(iv_cbc).decode(),
         "iv_cfb":     base64.b64encode(iv_cfb).decode(),
         "ciphertext": base64.b64encode(xored).decode(),
-        # Store ct_cfb so receiver can un-XOR, then AES-CBC decrypt
-        "ct_cfb":     base64.b64encode(ct_cfb).decode(),
+        "ct_cfb":     base64.b64encode(ct_cfb).decode(),  # needed to un-XOR on the other side
     }
 
 
 def double_decrypt(key: bytes, payload: dict) -> str:
-    """
-    Reverse of :func:`double_encrypt`.
-    """
     key_cbc = hashlib.sha256(b"CBC" + key).digest()
     key_cfb = hashlib.sha256(b"CFB" + key).digest()
 
-    iv_cbc  = base64.b64decode(payload["iv_cbc"])
-    iv_cfb  = base64.b64decode(payload["iv_cfb"])
-    xored   = base64.b64decode(payload["ciphertext"])
-    ct_cfb  = base64.b64decode(payload["ct_cfb"])
+    iv_cbc = base64.b64decode(payload["iv_cbc"])
+    iv_cfb = base64.b64decode(payload["iv_cfb"])
+    xored  = base64.b64decode(payload["ciphertext"])
+    ct_cfb = base64.b64decode(payload["ct_cfb"])
 
-    # Un-XOR to recover ct_cbc
-    ct_cbc = bytes(a ^ b for a, b in zip(xored, ct_cfb))
+    # Ensure both byte strings are the same length before XOR-ing
+    length = min(len(xored), len(ct_cfb))
+    ct_cbc = bytes(a ^ b for a, b in zip(xored[:length], ct_cfb[:length]))
 
-    # Decrypt CBC layer
+    # Decrypt the CBC layer to get back the padded plaintext
     cipher_cbc = AES.new(key_cbc, AES.MODE_CBC, iv_cbc)
     padded     = cipher_cbc.decrypt(ct_cbc)
     plaintext  = unpad(padded, AES_BLOCK_SIZE, style="pkcs7")
     return plaintext.decode("utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Extra Credit Part 2 – Diffie-Hellman Key Exchange (RFC 3526 Group 14)
-# ---------------------------------------------------------------------------
+# --- Extra Credit: Diffie-Hellman Key Exchange (RFC 3526 Group 14) ---
 
-# 2048-bit MODP Group 14 prime (RFC 3526)
+# Standard 2048-bit prime from RFC 3526 — widely trusted for DH
 DH_PRIME = int(
     "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
     "29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
@@ -192,46 +133,26 @@ DH_GENERATOR = 2
 
 
 def dh_generate_private_key() -> int:
-    """Generate a random 256-bit DH private key."""
+    # 256 random bits is more than enough for DH private key security
     return int.from_bytes(get_random_bytes(32), "big")
 
 
 def dh_public_key(private_key: int) -> int:
-    """Compute DH public key: g^private mod p."""
+    # g^private mod p
     return pow(DH_GENERATOR, private_key, DH_PRIME)
 
 
 def dh_shared_secret(their_public: int, my_private: int) -> bytes:
-    """Compute shared secret and hash it to 256 bits."""
     shared = pow(their_public, my_private, DH_PRIME)
-    shared_bytes = shared.to_bytes(256, "big")
-    return hashlib.sha256(shared_bytes).digest()
+    # Hash the raw shared value down to 32 bytes for use as an AES key
+    return hashlib.sha256(shared.to_bytes(256, "big")).digest()
 
 
-# ---------------------------------------------------------------------------
-# Key Manager – handles rotation
-# ---------------------------------------------------------------------------
+# --- Key Manager ---
 
 class KeyManager:
-    """
-    Manages session key lifecycle.
-
-    Key Rotation Design:
-      - A shared salt is exchanged once at connection setup (sent in plaintext
-        – it does not need to be secret; it just needs to be the same on both
-        sides).
-      - Both sides track an *epoch* counter that starts at 0 and increments
-        every ROTATION_INTERVAL messages.
-      - When epoch advances, both sides independently re-run PBKDF2 with the
-        new epoch value mixed into the salt → they both arrive at the same new
-        key without any additional network traffic.
-      - Security benefit: limits the amount of ciphertext encrypted under any
-        single key, reducing exposure to cryptanalysis and providing forward
-        secrecy against passive recording attacks (older epochs are no longer
-        used).
-    """
-
-    ROTATION_INTERVAL = 10  # rotate key every N messages
+    # How many messages before we automatically rotate to a new key
+    ROTATION_INTERVAL = 10
 
     def __init__(self, password: str, salt: bytes, use_dh: bool = False,
                  dh_secret: bytes = None):
@@ -240,13 +161,12 @@ class KeyManager:
         self.epoch     = 0
         self.msg_count = 0
         self.use_dh    = use_dh
-        self.dh_secret = dh_secret  # 32-byte shared secret from DH
-
+        self.dh_secret = dh_secret
         self._refresh_key()
 
     def _refresh_key(self):
         if self.use_dh and self.dh_secret:
-            # For DH mode: mix dh_secret into salt instead of password
+            # In DH mode, use the shared secret as the "password" for derivation
             effective_pw = base64.b64encode(self.dh_secret).decode()
             self.current_key = derive_key(effective_pw, self.salt, self.epoch)
         else:
@@ -257,12 +177,12 @@ class KeyManager:
         return self.current_key
 
     def record_message(self):
-        """Call after each sent/received message to track rotation."""
+        # Both peers call this after every message, so they stay in sync automatically
         self.msg_count += 1
         if self.msg_count % self.ROTATION_INTERVAL == 0:
             self.epoch += 1
             self._refresh_key()
-            return True  # rotated
+            return True  # let the caller know a rotation just happened
         return False
 
     def force_rotate(self):
@@ -273,21 +193,18 @@ class KeyManager:
         return self.epoch
 
 
-# ---------------------------------------------------------------------------
-# Message Serialisation
-# ---------------------------------------------------------------------------
+# --- Message Packing ---
 
 def pack_message(payload: dict, sender: str, epoch: int, mode: str = "standard") -> str:
-    """Wrap an encrypted payload into a JSON envelope for transmission."""
+    # Wrap the encrypted payload with metadata so the receiver knows how to decrypt it
     envelope = {
-        "sender": sender,
-        "epoch":  epoch,
-        "mode":   mode,
+        "sender":  sender,
+        "epoch":   epoch,
+        "mode":    mode,
         "payload": payload,
     }
     return json.dumps(envelope)
 
 
 def unpack_message(raw: str) -> dict:
-    """Parse a JSON envelope from the wire."""
     return json.loads(raw)
