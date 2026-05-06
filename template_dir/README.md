@@ -1,126 +1,110 @@
-# CS 4173 – Secure P2P Messenger
+# 🔒 Secure P2P Messenger
 
-A secure, real-time point-to-point messaging application built for the CS 4173
-Cryptography final project.
-
-## Team Members
-- [Your Name]
-- [Teammate 2 Name]  
-- [Teammate 3 Name (Daniel)]
+A secure, real-time peer-to-peer instant messaging application built in Python. Messages are encrypted end-to-end using AES-256 before being sent over the network. Designed as a course project demonstrating applied cryptography concepts including key derivation, symmetric encryption, Diffie-Hellman key exchange, and automatic key rotation.
 
 ---
 
 ## Features
 
-| Requirement | Implementation |
-|---|---|
-| Encrypted messages (≥ 56-bit key) | AES-256-CBC (256-bit key) |
-| Key derived from password | PBKDF2-HMAC-SHA256, 100,000 iterations |
-| Different ciphertext per identical message | Random 128-bit IV per message |
-| PKCS#7 padding | Via PyCryptodome `Padding` module |
-| GUI with ciphertext display | Tkinter dark-theme GUI |
-| Socket-based P2P connection | TCP sockets with length-prefixed framing |
-| Periodic key rotation | Epoch-based PBKDF2 re-derivation every 10 messages |
-| **Extra credit**: Double encryption | AES-256-CBC ⊕ AES-256-CFB XOR scheme |
-| **Extra credit**: DH key exchange | 2048-bit MODP Group 14 (RFC 3526) |
+- **End-to-end encryption** — every message is encrypted with AES-256-CBC before it leaves your machine
+- **Password-based key derivation** — the shared password is never used directly as a key; PBKDF2-HMAC-SHA256 derives a strong key from it
+- **Diffie-Hellman key exchange** — optional passwordless mode where both peers negotiate a shared secret over an insecure channel
+- **Random IV per message** — the same message always produces different ciphertext
+- **Automatic key rotation** — the session key updates every 10 messages without any extra communication
+- **Double encryption mode** — extra credit mode that encrypts with AES-CBC and AES-CFB independently, then XORs the results together
+- **Live ciphertext display** — the GUI shows the raw ciphertext on every send and receive so you can verify encryption is working
 
 ---
 
-## File Structure
+## Requirements
+
+- Python 3.8+
+- [PyCryptodome](https://pycryptodome.readthedocs.io/)
+
+Install the dependency with:
+
+```bash
+pip install pycryptodome
+```
+
+---
+
+## How to Run
+
+The app works as a two-peer system. One machine acts as the **Server** (listens for a connection) and the other acts as the **Client** (connects to the server).
+
+**On the Server machine:**
+1. Run `python messenger_gui.py`
+2. Set Role to **Server**
+3. Enter a port (default: `9999`)
+4. Enter a shared password (or enable DH mode)
+5. Click **Connect** — the app will wait for the client to join
+
+**On the Client machine:**
+1. Run `python messenger_gui.py`
+2. Set Role to **Client**
+3. Enter the server's IP address and the same port
+4. Enter the same shared password (or enable DH mode)
+5. Click **Connect**
+
+Once both sides connect, you can start sending messages.
+
+> **Testing locally:** Set the server IP to `127.0.0.1` and open two terminal windows on the same machine.
+
+---
+
+## Project Structure
 
 ```
-secure_messenger/
-├── crypto_core.py      # All cryptographic primitives
-├── network.py          # TCP socket layer + handshake
-├── messenger_gui.py    # Tkinter GUI (main entry point)
-├── test_crypto.py      # 22 unit tests (all passing)
-├── requirements.txt    # Python dependencies
+├── messenger_gui.py   # Tkinter GUI — handles all user interaction
+├── crypto_core.py     # All cryptographic logic (encryption, key derivation, DH, key rotation)
+├── network.py         # TCP socket layer — connection setup, framing, and handshake
 └── README.md
 ```
 
 ---
 
-## Quick Start
+## How It Works
 
-### 1. Install dependencies
-```bash
-pip install pycryptodome
-```
+### Key Derivation
+The shared password is never used as the encryption key directly. Instead, `PBKDF2-HMAC-SHA256` with 100,000 iterations stretches the password into a 256-bit AES key. Both peers independently run the same derivation using the salt exchanged at connection time, so they both arrive at the same key without ever sending it over the network.
 
-### 2. Run Alice (Server)
-```bash
-python messenger_gui.py
-# Select role: Server
-# Port: 9999
-# Username: Alice
-# Password: mysecretpassword
-# Click Connect
-```
+### Encryption (Standard Mode)
+Messages are encrypted with **AES-256-CBC**. A fresh 16-byte random IV is generated for every message, which ensures that sending the same message twice produces completely different ciphertext each time. The IV is sent alongside the ciphertext in the message envelope so the receiver can decrypt it.
 
-### 3. Run Bob (Client)
-```bash
-python messenger_gui.py
-# Select role: Client
-# Host: 127.0.0.1 (or Alice's IP)
-# Port: 9999
-# Username: Bob
-# Password: mysecretpassword   ← must match Alice's
-# Click Connect
-```
+### Encryption (Double Mode — Extra Credit)
+In Double mode, the master key is split into two independent sub-keys. The plaintext is encrypted once with AES-256-CBC and once with AES-256-CFB. The two ciphertexts are then XOR'd together. An attacker would need to break both ciphers simultaneously to recover any information.
 
-Both windows will show **● Connected**. Type a message and press Enter or click **Send**.
-
----
-
-## Cryptographic Design
-
-### Key Derivation (PBKDF2)
-The shared password is **never used directly as a key**. Instead:
-```
-key = PBKDF2-HMAC-SHA256(password, SHA256(salt || epoch_bytes), iterations=100000)
-```
-- `salt` — 16 random bytes generated by the server at connection time, sent to the client in the handshake (plaintext, not secret).
-- `epoch` — an integer counter that increments on key rotation.
-
-### Encryption (AES-256-CBC)
-```
-IV ← random 16 bytes
-padded_plaintext ← PKCS7_pad(plaintext)
-ciphertext ← AES-256-CBC(key, IV, padded_plaintext)
-```
-A fresh IV is generated for **every message**, so encrypting "ok" ten times produces ten different ciphertexts.
+### Diffie-Hellman Key Exchange (Extra Credit)
+If DH mode is enabled, no shared password is needed. Both peers exchange public keys using the 2048-bit MODP Group 14 prime from RFC 3526. They each compute the same shared secret independently and use it in place of a password for key derivation. The plaintext password is never involved.
 
 ### Key Rotation
-Every 10 messages, both sides independently increment their `epoch` counter and re-derive a new key. No additional network messages are required because both sides derive identically from the same (password, salt, epoch) triple.
+Both peers track a message counter. Every 10 messages, the epoch counter increments and both sides re-derive a new key using the updated epoch mixed into the salt. Since both sides apply the same counter logic, they stay in sync automatically with no extra network traffic. You can also trigger a manual rotation at any time using the **Rotate Key Now** button. Rotating regularly limits how much ciphertext is encrypted under any single key.
+
+### Network Layer
+The two peers connect over a standard TCP socket. Messages are **length-prefixed** with a 4-byte header so the receiver knows exactly how many bytes to read per message. An application-level handshake runs first to exchange the salt (and DH public keys if applicable) before any chat messages flow.
 
 ---
 
-## Extra Credit
+## GUI Overview
 
-### Part 1 – Double Encryption with XOR
-```
-key_cbc = SHA256("CBC" || key)
-key_cfb = SHA256("CFB" || key)
-
-ct_cbc = AES-256-CBC(key_cbc, IV1, plaintext)
-ct_cfb = AES-256-CFB(key_cfb, IV2, plaintext)
-output = ct_cbc XOR ct_cfb
-```
-Security: An attacker must simultaneously break both AES-256-CBC and AES-256-CFB to recover any plaintext, analogous to 3DES EEE mode.
-
-### Part 2 – Diffie-Hellman Key Exchange
-Uses RFC 3526 2048-bit MODP Group 14. No pre-shared password needed.
-```
-Alice: priv_A ← random;  pub_A = g^priv_A mod p
-Bob:   priv_B ← random;  pub_B = g^priv_B mod p
-Both:  shared = g^(priv_A * priv_B) mod p  →  hashed with SHA-256
-```
-Enable by checking "DH Key Exchange" in the GUI before connecting.
+| Element | Description |
+|---|---|
+| Role | Switch between Server (listen) and Client (connect) |
+| Peer IP | The server's IP address — only needed when acting as Client |
+| Port | TCP port both peers must agree on |
+| Shared Password | The passphrase used to derive the encryption key |
+| DH Key Exchange | Enables passwordless mode using Diffie-Hellman |
+| Encryption Mode | Standard (AES-CBC) or Double (AES-CBC + AES-CFB XOR'd) |
+| Epoch / Msgs | Live counter showing current key epoch and message count |
+| Rotate Key Now | Manually forces a key rotation ahead of schedule |
+| Key Fingerprint | First 16 hex characters of the current key — both peers should match |
+| Chat window | Shows plaintext, ciphertext, timestamps, and rotation events |
 
 ---
 
-## Running Tests
-```bash
-python test_crypto.py
-```
-All 22 tests should pass in ~1 second.
+## Security Notes
+
+- The salt is exchanged in plaintext during the handshake — this is intentional and safe. The salt does not need to be secret; it just needs to be the same on both sides.
+- DH mode does not authenticate the peers. A man-in-the-middle could intercept the public key exchange. For a production system, this would be addressed with certificates or a pre-authenticated channel.
+- The double encryption XOR scheme is a course exercise. In production, authenticated encryption (AES-GCM) would be the standard choice.
