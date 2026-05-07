@@ -18,12 +18,12 @@ from network import start_server, connect_to_server, PeerConnectionError
 # --- Theme colors and fonts ---
 BG_DARK, BG_PANEL, BG_ENTRY = "#0d1117", "#161b22", "#21262d"
 ACCENT, ACCENT2, WARN        = "#58a6ff", "#3fb950", "#f0883e"
-TEXT_MAIN, TEXT_DIM          = "#c9d1d9", "#8b949e"
+TEXT_MAIN, TEXT_DIM, TEXT_DARK = "#c9d1d9", "#8b949e", "#0d1117"
 TEXT_CIPHER, BORDER          = "#f78166", "#30363d"
 
-FONT_TITLE = ("Courier New", 13, "bold")
-FONT_BODY  = ("Courier New", 10)
-FONT_SMALL = ("Courier New", 9)
+FONT_TITLE = ("Courier New", 18, "bold")
+FONT_BODY  = ("Courier New", 15)
+FONT_SMALL = ("Courier New", 12)
 
 
 def _ts():
@@ -35,7 +35,7 @@ class SecureMessengerApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("🔒 Secure P2P Messenger")
+        self.title("Secure P2P Messenger")
         self.configure(bg=BG_DARK)
         self.geometry("900x700")
         self.minsize(780, 580)
@@ -52,7 +52,7 @@ class SecureMessengerApp(tk.Tk):
         # Top bar with app title on the left and live connection status on the right
         top = tk.Frame(self, bg=BG_DARK, pady=6)
         top.pack(fill="x", padx=12)
-        tk.Label(top, text="🔒 SECURE P2P MESSENGER",
+        tk.Label(top, text="SECURE P2P MESSENGER",
                  font=FONT_TITLE, fg=ACCENT, bg=BG_DARK).pack(side="left")
         self.status_lbl = tk.Label(top, text="● Disconnected",
                                    font=FONT_SMALL, fg=TEXT_CIPHER, bg=BG_DARK)
@@ -98,10 +98,10 @@ class SecureMessengerApp(tk.Tk):
 
         # Server listens for incoming connections; Client connects to a server
         self._lbl(parent, "Role").pack(anchor="w", **p)
-        self.role_var = tk.StringVar(value="Server")
+        self.role_var = tk.StringVar(value="Host")
         rf = tk.Frame(parent, bg=BG_PANEL)
         rf.pack(fill="x", padx=12, pady=2)
-        for r in ("Server", "Client"):
+        for r in ("Host", "Client"):
             tk.Radiobutton(rf, text=r, variable=self.role_var, value=r,
                            bg=BG_PANEL, fg=TEXT_MAIN, selectcolor=BG_ENTRY,
                            activebackground=BG_PANEL, font=FONT_BODY,
@@ -110,7 +110,7 @@ class SecureMessengerApp(tk.Tk):
         # IP field is only relevant when acting as Client
         self._lbl(parent, "Peer IP (client only)").pack(anchor="w", **p)
         self.host_var   = tk.StringVar(value="127.0.0.1")
-        self.host_entry = self._entry(parent, textvariable=self.host_var)
+        self.host_entry = self._entry(parent, textvariable=self.host_var, state="disabled")
         self.host_entry.pack(fill="x", **p)
 
         self._lbl(parent, "Port").pack(anchor="w", **p)
@@ -171,7 +171,7 @@ class SecureMessengerApp(tk.Tk):
                                      font=FONT_BODY, bg=ACCENT, fg=BG_DARK,
                                      relief="flat", cursor="hand2",
                                      activebackground="#79b8ff",
-                                     command=self._connect)
+                                     command=self._connect, disabledforeground=TEXT_DARK)
         self.connect_btn.pack(fill="x", padx=12, pady=3)
 
         # Starts disabled — only enabled once a connection is active
@@ -179,7 +179,7 @@ class SecureMessengerApp(tk.Tk):
                                         font=FONT_BODY, bg=BG_ENTRY, fg=TEXT_DIM,
                                         relief="flat", cursor="hand2",
                                         activebackground=BG_ENTRY, state="disabled",
-                                        command=self._disconnect)
+                                        command=self._disconnect, disabledforeground=TEXT_DARK)
         self.disconnect_btn.pack(fill="x", padx=12, pady=3)
 
         self._divider(parent)
